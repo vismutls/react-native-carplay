@@ -8,6 +8,8 @@ import android.content.IntentFilter
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.car.app.CarContext.SCREEN_SERVICE
 import androidx.car.app.Screen
@@ -20,7 +22,6 @@ import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactContext
 import com.facebook.react.bridge.WritableNativeMap
 import com.facebook.react.modules.appregistry.AppRegistry
-import com.facebook.react.modules.core.TimingModule
 import com.facebook.react.modules.debug.DevSettingsModule
 import org.birkir.carplay.screens.CarScreen
 
@@ -60,19 +61,37 @@ class CarPlaySession(private val reactInstanceManager: ReactInstanceManager) : S
     return screen
   }
 
+  private fun activateLifecycleAndStart(reactContext: ReactContext) {
+    Handler(Looper.getMainLooper()).post {
+      try {
+        reactInstanceManager.onHostResume(null, null)
+      } catch (e: Exception) {
+        Log.e(TAG, "activateLifecycleAndStart: Failed to activate lifecycle", e)
+      }
+
+      // Post invokeStartTask to let lifecycle activation propagate
+      Handler(Looper.getMainLooper()).postDelayed({
+        invokeStartTask(reactContext)
+      }, 200)
+    }
+  }
+
   private fun runJsApplication() {
     val reactContext = reactInstanceManager.currentReactContext
     if (reactContext == null) {
       reactInstanceManager.addReactInstanceEventListener(
         object : ReactInstanceManager.ReactInstanceEventListener {
           override fun onReactContextInitialized(reactContext: ReactContext) {
-            invokeStartTask(reactContext)
             reactInstanceManager.removeReactInstanceEventListener(this)
+            activateLifecycleAndStart(reactContext)
           }
         })
-      reactInstanceManager.createReactContextInBackground()
+      // Force context creation if not already started
+      if (!reactInstanceManager.hasStartedCreatingInitialContext()) {
+        reactInstanceManager.createReactContextInBackground()
+      }
     } else {
-      invokeStartTask(reactContext)
+      activateLifecycleAndStart(reactContext)
     }
   }
 
@@ -88,15 +107,14 @@ class CarPlaySession(private val reactInstanceManager: ReactInstanceManager) : S
       }
 
       catalystInstance.getJSModule(AppRegistry::class.java)
-        .runApplication(jsAppModuleName, appParams)
+        ?.runApplication(jsAppModuleName, appParams)
 
-      val timingModule = reactContext.getNativeModule(
-        TimingModule::class.java
-      )
       val carModule = reactInstanceManager
         .currentReactContext?.getNativeModule(CarPlayModule::class.java)
-      carModule!!.setCarContext(carContext, screen)
-      timingModule!!.onHostResume()
+
+      if (carModule != null) {
+        carModule.setCarContext(carContext, screen)
+      }
 
     } catch (e: Exception) {
       e.printStackTrace()
@@ -123,4 +141,3 @@ class CarPlaySession(private val reactInstanceManager: ReactInstanceManager) : S
     const val TAG = "CarPlaySession"
   }
 }
-

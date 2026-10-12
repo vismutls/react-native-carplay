@@ -36,10 +36,10 @@ class RCTListTemplate(
       props.getArray("sections")?.let {
         for (i in 0 until it.size()) {
           val section = it.getMap(i)
-          val header = section.getString("header")
+          val header = section?.getString("header")
           addSectionedList(
             SectionedItemList.create(
-              parseItemList(section.getArray("items")),
+              parseItemList(section?.getArray("items")),
               header ?: "Missing title"
             )
           )

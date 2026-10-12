@@ -16,6 +16,7 @@ import androidx.car.app.model.CarText
 import androidx.car.app.model.Distance
 import androidx.car.app.model.TabTemplate
 import androidx.car.app.model.Template
+import com.facebook.react.ReactApplication
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Callback
 import com.facebook.react.bridge.LifecycleEventListener
@@ -32,7 +33,6 @@ import org.birkir.carplay.parser.TemplateParser
 import org.birkir.carplay.screens.CarScreen
 import org.birkir.carplay.screens.CarScreenContext
 import org.birkir.carplay.utils.EventEmitter
-import java.util.WeakHashMap
 
 
 @ReactModule(name = CarPlayModule.NAME)
@@ -44,15 +44,18 @@ class CarPlayModule internal constructor(private val reactContext: ReactApplicat
 
   private var currentCarScreen: CarScreen? = null
   private var screenManager: ScreenManager? = null
-  private val carScreens: WeakHashMap<String, CarScreen> = WeakHashMap()
-  private val carTemplates: WeakHashMap<String, ReadableMap> = WeakHashMap()
-  private val carScreenContexts: WeakHashMap<CarScreen, CarScreenContext> =
-    WeakHashMap()
+  private val carScreens: HashMap<String, CarScreen> = HashMap()
+  private val carTemplates: HashMap<String, ReadableMap> = HashMap()
+  private val carScreenContexts: HashMap<CarScreen, CarScreenContext> =
+    HashMap()
   private val handler: Handler = Handler(Looper.getMainLooper())
 
 
   // Global event emitter (no templateId's)
   private var eventEmitter: EventEmitter? = null
+  private var backPressCallbackRegistered = false
+  private var hasCarContext = false
+  private var didConnectEmitted = false
 
   init {
     reactContext.addLifecycleEventListener(object : LifecycleEventListener {
@@ -62,9 +65,39 @@ class CarPlayModule internal constructor(private val reactContext: ReactApplicat
           ?.addMenuItem("Reload Android Auto")
       }
 
-      override fun onHostPause() {}
-      override fun onHostDestroy() {}
+      override fun onHostPause() {
+        reactivateLifecycleForAndroidAuto()
+      }
+      override fun onHostDestroy() {
+        reactivateLifecycleForAndroidAuto()
+      }
     })
+  }
+
+  /**
+   * When the phone Activity is paused/destroyed while Android Auto is connected,
+   * the React Native host lifecycle goes to PAUSED/DESTROYED state. This causes
+   * native modules (including Networking) to stop processing requests, making
+   * fetch() hang indefinitely from the JS thread.
+   *
+   * Re-calling onHostResume keeps the lifecycle active so Android Auto can
+   * continue making network requests.
+   */
+  private fun reactivateLifecycleForAndroidAuto() {
+    if (!hasCarContext) return
+    Log.d(TAG, "reactivateLifecycleForAndroidAuto: Phone app closed, re-activating lifecycle for Android Auto")
+
+    Handler(Looper.getMainLooper()).postDelayed({
+      try {
+        val reactInstanceManager = (reactContext.applicationContext as ReactApplication)
+          .reactNativeHost.reactInstanceManager
+
+        reactInstanceManager.onHostResume(null, null)
+        Log.d(TAG, "reactivateLifecycleForAndroidAuto: Lifecycle re-activated successfully")
+      } catch (e: Exception) {
+        Log.e(TAG, "reactivateLifecycleForAndroidAuto: Failed to re-activate lifecycle", e)
+      }
+    }, 100)
   }
 
   override fun getName(): String {
@@ -72,16 +105,32 @@ class CarPlayModule internal constructor(private val reactContext: ReactApplicat
   }
 
   fun setCarContext(carContext: CarContext, currentCarScreen: CarScreen) {
+    if (eventEmitter == null) {
+      eventEmitter = EventEmitter(reactContext)
+    }
+
+    hasCarContext = true
     parser = Parser(carContext, CarScreenContext("", eventEmitter!!, carScreens));
+
     this.carContext = carContext
     this.currentCarScreen = currentCarScreen
+
     screenManager = currentCarScreen.screenManager
-    carScreens["root"] = this.currentCarScreen
-    carContext.onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
-      override fun handleOnBackPressed() {
-        eventEmitter?.backButtonPressed(screenManager?.top?.marker)
-      }
-    })
+    carScreens["root"] = currentCarScreen
+
+    // Only register back press callback once
+    if (!backPressCallbackRegistered) {
+      carContext.onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+          Log.d(TAG, "handleOnBackPressed: Back button pressed, stack size: ${screenManager?.stackSize}")
+          eventEmitter?.backButtonPressed(screenManager?.top?.marker)
+        }
+      })
+
+      backPressCallbackRegistered = true
+    }
+
+    didConnectEmitted = true
     eventEmitter?.didConnect()
   }
 
@@ -95,7 +144,10 @@ class CarPlayModule internal constructor(private val reactContext: ReactApplicat
 
   @ReactMethod
   fun checkForConnection() {
-    eventEmitter?.didConnect()
+    if (hasCarContext && !didConnectEmitted) {
+      didConnectEmitted = true
+      eventEmitter?.didConnect()
+    }
   }
 
   @ReactMethod
@@ -142,11 +194,35 @@ class CarPlayModule internal constructor(private val reactContext: ReactApplicat
   fun setRootTemplate(templateId: String, animated: Boolean?) {
     Log.d(TAG, "set Root Template for $templateId")
     handler.post {
-      val screen = getScreen(templateId)
-      if (screen != null) {
-        currentCarScreen = screen
-        screenManager?.popToRoot()
-        screenManager?.push(screen)
+      // Reuse the initial root CarScreen instead of pushing a new one on top.
+      // This ensures the tab template is the root of the ScreenManager,
+      // so popping back from pushed screens returns to it correctly.
+      val rootScreen = carScreens["root"]
+
+      if (rootScreen != null) {
+        val config = carTemplates[templateId]
+        if (config != null) {
+          screenManager?.popToRoot()
+
+          rootScreen.marker = templateId
+          carScreens[templateId] = rootScreen
+
+          carScreenContexts.remove(rootScreen)
+          val carScreenContext = createCarScreenContext(rootScreen)
+          carScreenContexts[rootScreen] = carScreenContext
+
+          val template = parseTemplate(config, carScreenContext)
+          rootScreen.setTemplate(template, templateId, config)
+          currentCarScreen = rootScreen
+        }
+      } else {
+        // Fallback: create and push a new screen
+        val screen = getScreen(templateId)
+        if (screen != null) {
+          currentCarScreen = screen
+          screenManager?.popToRoot()
+          screenManager?.push(screen)
+        }
       }
     }
   }
@@ -172,6 +248,10 @@ class CarPlayModule internal constructor(private val reactContext: ReactApplicat
   @ReactMethod
   fun popTemplate(animated: Boolean?) {
     handler.post {
+      if ((screenManager?.stackSize ?: 0) <= 1) {
+        return@post
+      }
+
       screenManager!!.pop()
       removeScreen(currentCarScreen)
       currentCarScreen = screenManager!!.top as CarScreen

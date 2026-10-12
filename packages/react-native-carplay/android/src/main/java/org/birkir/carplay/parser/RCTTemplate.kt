@@ -153,9 +153,13 @@ abstract class RCTTemplate(
     return ItemList.Builder().apply {
       for (i in 0 until items!!.size()) {
         if (type == "row") {
-          addItem(parseRowItem(items.getMap(i), i))
+          items.getMap(i)?.let {
+            addItem(parseRowItem(it, i))
+          }
         } else if (type == "grid") {
-          addItem(parseGridItem(items.getMap(i), i))
+          items.getMap(i)?.let {
+            addItem(parseGridItem(it, i))
+          }
         }
       }
     }.build()
@@ -187,12 +191,12 @@ abstract class RCTTemplate(
       if (titleVariants != null) {
         if (titleVariants.size() > 0) {
           setTitle(parseCarText(
-            titleVariants.getString(0),
+            titleVariants.getString(0) ?: "",
             metadata
           ))
         }
         if (titleVariants.size() > 1) {
-          setText(titleVariants.getString(1))
+          setText(titleVariants.getString(1) ?: "")
         }
       }
       item.getMap("image")?.let { setImage(parseCarIcon(it)) }
@@ -259,7 +263,7 @@ abstract class RCTTemplate(
     )
     props.getArray("texts")?.let {
       for (i in 0 until it.size()) {
-        builder.addText(it.getString(i))
+        builder.addText(it.getString(i) ?: "")
       }
     }
     props.getMap("image")?.let {
@@ -299,14 +303,18 @@ abstract class RCTTemplate(
       item.getMap("image")?.let {
         setImage(parseCarIcon(it))
       }
-      item.getArray("actions")?.let {
-        for (i in 0 until it.size()) {
-          addAction(parseAction(it.getMap(i)))
+      item.getArray("actions")?.let { actions ->
+        for (i in 0 until actions.size()) {
+          actions.getMap(i)?.let { actionMap ->
+            addAction(parseAction(actionMap))
+          }
         }
       }
-      item.getArray("items")?.let {
-        for (i in 0 until it.size()) {
-          addRow(parseRowItem(it.getMap(i), i))
+      item.getArray("items")?.let { items ->
+        for (i in 0 until items.size()) {
+          items.getMap(i)?.let { itemsMap ->
+            addRow(parseRowItem(itemsMap, i))
+          }
         }
       }
     }.build()

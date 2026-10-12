@@ -16,8 +16,19 @@ class CarPlayService : CarAppService() {
   private lateinit var reactInstanceManager: ReactInstanceManager
   override fun onCreate() {
     super.onCreate()
-    reactInstanceManager =
-      (application as ReactApplication).reactNativeHost.reactInstanceManager
+
+    try {
+      reactInstanceManager =
+        (application as ReactApplication).reactNativeHost.reactInstanceManager
+
+      // Only initialize React Native when Android Auto connects (not for regular app usage)
+      if (!reactInstanceManager.hasStartedCreatingInitialContext()) {
+        reactInstanceManager.createReactContextInBackground()
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "onCreate: Error initializing ReactInstanceManager", e)
+      throw e
+    }
   }
 
   override fun createHostValidator(): HostValidator {

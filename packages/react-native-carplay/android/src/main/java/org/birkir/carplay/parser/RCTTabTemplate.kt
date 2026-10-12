@@ -60,12 +60,12 @@ class RCTTabTemplate(
     return currentTemplate!!
   }
 
-  private fun parseTabInfo(tabProps: ReadableMap, builder: TabTemplate.Builder) {
-    val id = tabProps.getString("id") ?: return
+  private fun parseTabInfo(tabProps: ReadableMap?, builder: TabTemplate.Builder) {
+    val id = tabProps?.getString("id") ?: return
     val tab = parseTab(tabProps)
     builder.addTab(tab)
 
-    val headerAction = tabProps.getMap("headerAction")?.let { parseAction(it) } ?: Action.APP_ICON
+    val headerAction = tabProps?.getMap("headerAction")?.let { parseAction(it) } ?: Action.APP_ICON
     tabInfoMap[id] = TabInfo(tab.title.toString(), tab.icon, headerAction)
   }
 
@@ -94,18 +94,28 @@ class RCTTabTemplate(
     currentTemplate = builder.build()
   }
 
-  private fun parseTab(props: ReadableMap): Tab {
+  private fun parseTab(props: ReadableMap?): Tab {
     return Tab.Builder().apply {
-      props.getString("id")?.let { setContentId(it) }
-      val config = props.getMap("config")
+      props?.getString("id")?.let { setContentId(it) }
+      val config = props?.getMap("config")
       when {
         config != null -> {
           setTitle(config.getString("tabTitle") ?: DEFAULT_TAB_TITLE)
-          setIcon(CarIcon.APP_ICON) // TODO: Parse custom icon if needed
+          val icon = config.getMap("tabImage")
+          if (icon != null) {
+            setIcon(parseCarIcon(icon))
+          } else {
+            setIcon(CarIcon.APP_ICON)
+          }
         }
         else -> {
-          setTitle(DEFAULT_TAB_TITLE)
-          setIcon(CarIcon.APP_ICON)
+          setTitle(props?.getString("title") ?: DEFAULT_TAB_TITLE)
+          val icon = props?.getMap("tabImage") ?: props?.getMap("icon")
+          if (icon != null) {
+            setIcon(parseCarIcon(icon))
+          } else {
+            setIcon(CarIcon.APP_ICON)
+          }
         }
       }
     }.build()
@@ -141,10 +151,15 @@ class RCTTabTemplate(
     Log.d(TAG, "Updating contents for tab: $tabContentId")
     activeTabId = tabContentId
     buildCurrentTemplate()
-    // Update the main tab screen with the new template
-    carScreenContext.screens[carScreenContext.screenMarker]?.apply {
-      setTemplate(currentTemplate, carScreenContext.screenMarker, null)
-      invalidate()
+
+    val screen = carScreenContext.screens[carScreenContext.screenMarker]
+      ?: carScreenContext.screens["root"]
+
+    if (screen != null) {
+      screen.setTemplate(currentTemplate, screen.marker ?: "root", null)
+      screen.invalidate()
+    } else {
+      Log.e(TAG, "updateContents: no screen found for marker=${carScreenContext.screenMarker}")
     }
     Log.d(TAG, "Template updated for tab $tabContentId")
   }
